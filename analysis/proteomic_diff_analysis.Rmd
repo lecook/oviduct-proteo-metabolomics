@@ -1,0 +1,664 @@
+---
+title: "Differential analysis for proteins in oviductal fluid"
+author: "lecook"
+date: "2022-02-23"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+```{r}
+library(DEP)
+library(workflowr)
+library(dplyr)
+library(data.table)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(SummarizedExperiment)
+library(tibble)
+setwd("/data/gpfs/projects/punim0494/amhutchinson/oviduct-proteo-metabolomics/")
+
+inputDir = "output/maxquant/combined/txt/"
+outputDir = "output/dep/"
+plotDir = "output/plots/"
+```
+
+
+## Import data 
+```{r}
+#import data table
+
+data <- read.table(paste0(inputDir,"proteinGroups.txt"), header=TRUE, sep="\t")
+
+# We filter for contaminant proteins and decoy database hits, which are indicated by "+" in the columns "Potential.contaminants" and "Reverse", respectively.
+
+data <- filter(data, Reverse != "+", Potential.contaminant != "+")
+```
+
+```{r}
+#Take a look at the dimensions of the data
+
+dim(data)
+
+#Take a look at the column names in the data.frame
+
+colnames(data)
+
+##The “LFQ.intensity” columns will be used for subsequent analysis.
+```
+
+```{r}
+## Prepare data for differential analysis
+
+data$Protein.IDs_1 <- gsub('scaffold.*', '', data$Protein.IDs)
+data$Protein.IDs_1 <- gsub('tr', '', data$Protein.IDs_1)
+data$Protein.IDs_1[3] <- "|CCM|CCM"
+
+data$Protein.IDs_2 <- unlist(lapply(strsplit(as.character(data$Protein.IDs_1), "[|]"), '[[', 2))
+data$Protein.IDs_3 <- unlist(lapply(strsplit(as.character(data$Protein.IDs_1), "[|]"), '[[', 3))
+
+# Are there any duplicated gene names?
+
+data$Protein.IDs_3 %>% duplicated() %>% any()
+## [1] TRUE
+
+## Make a table of duplicated gene names
+
+data %>% group_by(Protein.IDs_3) %>% summarize(frequency = n()) %>%
+  arrange(desc(frequency)) %>% filter(frequency > 1)
+
+##Make unique names using the annotation in the "Gene.names" column as primary names and the annotation in "Protein.IDs" as name for those that do not have an gene name.
+
+data_unique <- make_unique(data, "Protein.IDs_3", "Protein.IDs_3", delim = ";")
+
+# Generate a SummarizedExperiment object using an experimental design
+
+LFQ_columns <- grep("LFQ.", colnames(data_unique)) ## get LFQ column numbers
+experimental_design <- fread(paste0(outputDir,"experimental_design"))
+data_se <- make_se(data_unique, LFQ_columns, experimental_design)
+
+## Generate a SummarizedExperiment object by parsing condition information from the column names
+
+LFQ_columns <- grep("LFQ.", colnames(data_unique))
+data_se_parsed <- make_se_parse(data_unique, LFQ_columns)
+
+##Data is now log2 transformed
+
+## Let's have a look at the SummarizedExperiment object
+data_se
+plot_frequency(data_se)
+```
+
+```{r}
+#Filter on missing values
+## Filter for proteins that are identified in all replicates of at least one condition
+
+data_filt <- filter_missval(data_se, thr = 0)
+
+### Here you can check how many background proteins and how many differentially expressed proteins are produced using each method
+
+#### Then perform differential expression analysis
+data_diff_filt <- test_diff(data_filt, type = "control", control = "NOE")
+data_diff_filt_all_contrasts <- test_diff(data_filt, type = "all")
+#### And assign alpha 0.05
+dep_data_filt <- add_rejections(data_diff_filt, alpha = 0.05, lfc = log2(1.5))
+#### Generate results table
+data_results_filt <- get_results(dep_data_filt)
+
+#### How many differentially expressed proteins are there
+data_results_filt %>% filter(significant) %>% nrow()
+colnames(data_results_filt)
+write.table(data_results_filt, file=paste0(outputDir,"data_differential_results_filt.txt"), quote=FALSE, sep="\t")
+
+#bg = 2587; de = 35
+
+```
+
+```{r}
+##Alternatively filter for proteins that are identified in 2 out of 3 replicates of at least one condition
+data_filt2 <- filter_missval(data_se, thr = 1)
+
+### Here you can check how many background proteins and how many differentially expressed proteins are produced using each method
+
+#### Then perform differential expression analysis
+data_diff_filt2 <- test_diff(data_filt2, type = "control", control = "NOE")
+data_diff_filt2_all_contrasts <- test_diff(data_filt2, type = "all")
+#### And assign alpha 0.05
+dep_data_filt2 <- add_rejections(data_diff_filt2, alpha = 0.05, lfc = log2(1.5))
+#### Generate results table
+data_results_filt2 <- get_results(dep_data_filt2)
+#### How many differentially expressed proteins are there?
+data_results_filt2 %>% filter(significant) %>% nrow()
+colnames(data_results_filt2)
+write.table(data_results_filt2, file=paste0(outputDir,"data_differential_results_filt2.txt"), quote=FALSE, sep="\t")
+
+#bg = 2968; de = 34
+
+```
+
+```{r}
+## Or filter for proteins that are quantified in at least 2/3 of the samples.
+frac_filtered <- filter_proteins(data_se, "fraction", min = 0.66)
+
+### Here you can check how many background proteins and how many differentially expressed proteins are produced using each method
+
+#### Then perform differential expression analysis
+frac_filtered <- test_diff(frac_filtered, type = "control", control = "NOE")
+diff_frac_filtered_all_contrasts <- test_diff(frac_filtered, type = "all")
+#### And assign alpha 0.05
+dep_frac_filtered <- add_rejections(frac_filtered, alpha = 0.05, lfc = log2(1.5))
+#### Generate results table
+results_frac_filtered <- get_results(dep_frac_filtered)
+#### How many differentially expressed proteins are there
+results_frac_filtered %>% filter(significant) %>% nrow()
+colnames(results_frac_filtered)
+write.table(results_frac_filtered, file=paste0(outputDir,"differential_results_frac_filtered.txt"), quote=FALSE, sep="\t")
+
+#bg = 2901; de = 29
+
+```
+
+```{r}
+# Filter for proteins that have no missing values
+complete_cases <- filter_proteins(data_se, "complete")
+
+### Here you can check how many background proteins and how many differentially expressed proteins are produced using each method
+
+#### Then perform differential expression analysis
+diff_complete_cases <- test_diff(complete_cases, type = "control", control = "NOE")
+diff_complete_cases_all_contrasts <- test_diff(complete_cases, type = "all")
+#### And assign alpha 0.05
+dep_complete_cases <- add_rejections(diff_complete_cases, alpha = 0.05, lfc = log2(1.5))
+#### Generate results table
+results_complete_cases <- get_results(dep_complete_cases)
+#### How many differentially expressed proteins are there?
+results_complete_cases %>% filter(significant) %>% nrow()
+colnames(results_complete_cases)
+write.table(results_complete_cases, file=paste0(outputDir,"differential_results_complete_cases.txt"), quote=FALSE, sep="\t")
+
+#bg = 1885; de = 17
+
+```
+
+```{r}
+# No filtering
+no_filter <- data_se
+
+### Here you can check how many background proteins and how many differentially expressed proteins are produced using each method
+
+#### Then perform differential expression analysis
+diff_no_filter <- test_diff(no_filter, type = "control", control = "NOE")
+diff_no_filter_all_contrasts <- test_diff(no_filter, type = "all")
+#### And assign alpha 0.05
+dep_no_filter <- add_rejections(diff_no_filter, alpha = 0.05, lfc = log2(1.5))
+#### Generate results table
+results_no_filter <- get_results(dep_no_filter)
+#### How many differentially expressed proteins are there?
+results_no_filter %>% filter(significant) %>% nrow()
+colnames(results_no_filter)
+write.table(results_no_filter, file=paste0(outputDir,"differential_results_no_filter.txt"), quote=FALSE, sep="\t")
+
+#bg = 5305; de = 41
+
+```
+
+
+```{r}
+## Plot a barplot of the number of identified proteins per samples (change according to which filtering you used)
+pdf("proteins_per_sample_frac_filtered.pdf")
+plot_numbers(frac_filtered)
+dev.off()
+```
+
+```{r}
+# Plot a barplot of the protein identification overlap between samples
+pdf("proteins_overlap_between_samples_data_frac_filtered.pdf")
+plot_coverage(frac_filtered)
+dev.off()
+```
+
+```{r}
+# Normalize the data
+## The data is background corrected and normalized by variance stabilizing transformation (vsn).
+
+## Scale and variance stabilize - all filter conditions
+
+data_norm_no_filter <- normalize_vsn(no_filter)
+
+data_norm_complete_cases <- normalize_vsn(complete_cases)
+
+data_norm_filt <- normalize_vsn(data_filt)
+
+data_norm_filt2 <- normalize_vsn(data_filt2)
+
+data_norm_frac_filtered <- normalize_vsn(frac_filtered)
+```
+
+```{r}
+## Mean versus SD plot - all conditions
+
+pdf(paste0(plotDir,"mean_vs_sd_no_filter.pdf"))
+meanSdPlot(no_filter)
+dev.off()
+
+pdf(paste0(plotDir,"mean_vs_sd_complete_cases.pdf"))
+meanSdPlot(complete_cases)
+dev.off()
+
+pdf(paste0(plotDir,"mean_vs_sd_data_filt.pdf"))
+meanSdPlot(data_filt)
+dev.off()
+
+pdf(paste0(plotDir,"mean_vs_sd_data_filt2.pdf"))
+meanSdPlot(data_filt2)
+dev.off()
+
+pdf(paste0(plotDir,"mean_vs_sd_frac_filtered.pdf"))
+meanSdPlot(frac_filtered)
+dev.off()
+```
+
+```{r}
+##Visualize normalization by boxplots for all samples before and after normalization
+
+pdf(paste0(plotDir,"normalised_data_plot_no_filter.pdf"))
+plot_normalization(no_filter, data_norm_no_filter)
+dev.off()
+
+pdf(paste0(plotDir,"normalised_data_plot_complete_cases.pdf"))
+plot_normalization(complete_cases, data_norm_complete_cases)
+dev.off()
+
+pdf(paste0(plotDir,"normalised_data_plot_data_filt.pdf"))
+plot_normalization(data_filt, data_norm_filt)
+dev.off()
+
+pdf(paste0(plotDir,"normalised_data_plot_data_filt2.pdf"))
+plot_normalization(data_filt2, data_norm_filt2)
+dev.off()
+
+pdf(paste0(plotDir,"normalised_data_plot_frac_filtered.pdf"))
+plot_normalization(frac_filtered, data_norm_frac_filtered)
+dev.off()
+```
+
+```{r}
+#Impute data for missing values
+
+## Plot a heatmap of proteins with missing values
+
+pdf(paste0(plotDir,"missing_values_no_filter.pdf"))
+plot_missval(no_filter)
+dev.off()
+
+pdf(paste0(plotDir,"missing_values_complete_cases.pdf"))
+plot_missval(complete_cases)
+dev.off()
+
+pdf(paste0(plotDir,"missing_values_data_filt.pdf"))
+plot_missval(data_filt)
+dev.off()
+
+pdf(paste0(plotDir,"missing_values_data_filt2.pdf"))
+plot_missval(data_filt2)
+dev.off()
+
+pdf(paste0(plotDir,"missing_values_data_frac_filtered.pdf"))
+plot_missval(data_filt2)
+dev.off()
+```
+
+```{r}
+## Plot intensity distributions and cumulative fraction of proteins with and without missing values
+
+pdf(paste0(plotDir,"intensity_dist_of_missing_values_no_filter.pdf"))
+plot_detect(no_filter)
+dev.off()
+
+pdf(paste0(plotDir,"intensity_dist_of_missing_values_complete_cases.pdf"))
+plot_detect(complete_cases)
+dev.off()
+
+pdf(paste0(plotDir,"intensity_dist_of_missing_values_data_filt.pdf"))
+plot_detect(data_filt)
+dev.off()
+
+pdf(paste0(plotDir,"intensity_dist_of_missing_values_data_filt2.pdf"))
+plot_detect(data_filt2)
+dev.off()
+
+pdf(paste0(plotDir,"intensity_dist_of_missing_values_frac_filtered.pdf"))
+plot_detect(frac_filtered)
+dev.off()
+```
+
+```{r}
+## All possible imputation methods are printed in an error, if an invalid function name is given.
+
+impute(data_norm, fun = "")
+```
+
+```{r}
+#These are some options for data imputation
+
+## No imputation
+no_imputation <- data_se
+
+## 1. Impute missing data using random draws from a Gaussian distribution centered around a minimal value (for MNAR)
+
+data_imp <- impute(data_norm_filt, fun = "MinProb", q = 0.01)
+
+## 2. Impute missing data using random draws from a manually defined left-shifted Gaussian distribution (for MNAR)
+
+data_imp_man <- impute(data_norm, fun = "man", shift = 1.8, scale = 0.3)
+
+## 3. Impute missing data using the k-nearest neighbour approach (for MAR)
+
+data_imp_knn <- impute(data_norm, fun = "knn", rowmax = 0.9)
+
+## 4. MLE
+data_imp_mle <- impute(data_norm, fun = "MLE")
+```
+
+```{r}
+#Focus on data-filt2
+
+#no imputation
+no_imputation_data_filt2 <- data_norm_filt2
+
+#Minprob
+data_imp_filt2 <- impute(data_norm_filt2, fun = "MinProb", q = 0.01)
+
+# Perform a mixed imputation
+## Extract protein names with missing values 
+## in all replicates of at least one condition
+proteins_MNAR_filt2 <- get_df_long(data_norm_filt2) %>%
+  group_by(name, condition) %>%
+  summarize(NAs = all(is.na(intensity))) %>% 
+  filter(NAs) %>% 
+  pull(name) %>% 
+  unique()
+
+## Get a logical vector
+MNAR_filt2 <- names(data_norm_filt2) %in% proteins_MNAR_filt2
+
+##perform the imputation
+mixed_imputation_filt2 <- impute(
+  data_norm_filt2, 
+  fun = "mixed",
+  randna = !MNAR_filt2, # we have to define MAR which is the opposite of MNAR
+  mar = "knn", # imputation function for MAR
+  mnar = "zero") # imputation function for MNAR
+```
+
+```{r}
+# Plot intensity distributions before and after imputation
+plot_imputation(no_imputation_data_filt2, data_imp_filt2, mixed_imputation_filt2)
+
+pdf(paste0(plotDir,"intensity_dist_before_and_after_imputation_data_filt2_all samples.pdf"))
+plot_imputation(no_imputation_data_filt2, data_imp_filt2, mixed_imputation_filt2)
+dev.off()
+```
+
+```{r}
+#Differential enrichment analysis based on linear models and empirical Bayes statistics
+
+# Test every sample versus control
+
+data_diff_no_imputation_filt2 <- test_diff(no_imputation_data_filt2, type = "control", control = "NOE")
+
+data_diff_imp_filt2 <- test_diff(data_imp_filt2, type = "control", control = "NOE")
+
+data_diff_mixed_imputation_filt2 <- test_diff(mixed_imputation_filt2, type = "control", control = "NOE")
+
+# Test all possible comparisons of samples
+
+data_diff_all_contrasts_no_imputation_filt2 <- test_diff(no_imputation_data_filt2, type = "all")
+
+data_diff_all_contrasts_data_imp_filt2 <- test_diff(data_imp_filt2, type = "all")
+
+data_diff_all_contrasts_mixed_imputation_filt2 <- test_diff(mixed_imputation_filt2, type = "all")
+```
+
+```{r}
+# Test manually defined comparisons
+## This is perhaps where you could try and include the comparisons with the blood and tissue
+## To see where they fit with the samples
+## Not sure how to "control" or "minus" these from the analysis but maybe you can see what
+## overlaps with the fluid samples for both control and oestrus and then look at differential proteins between
+## the fluid and tissues. Because I guess you would expect the proteins that are in both to be higher in the 
+## tissue? 
+## And then can look at what is not in both groups as well?
+
+data_diff_manual <- test_diff(data_imp, type = "manual", 
+                              test = c("Blood", "OE")) ## put in the actual IDs you want to compare
+```
+
+```{r}
+# Denote significant proteins based on user defined cutoffs
+
+dep_filt2_no_imp <- add_rejections(data_diff_no_imputation_filt2, alpha = 0.05, lfc = log2(1.5))
+
+dep_filt2_imp <- add_rejections(data_diff_imp_filt2, alpha = 0.05, lfc = log2(1.5))
+
+dep_filt2_mixed <- add_rejections(data_diff_mixed_imputation_filt2, alpha = 0.05, lfc = log2(1.5))
+```
+
+```{r}
+# Plot the first and second principal components (Make a PCA)
+## to change label make it TRUE or FALSE
+
+pdf(paste0(plotDir,'pca_filt2_allsamples_no_imputation.pdf'))
+plot_pca(dep_filt2_no_imp, x = 1, y = 2, n = 500, label=FALSE, indicate ="condition")
+dev.off()
+
+pdf(paste0(plotDir,'pca_filt2_allsamples_imputed.pdf'))
+plot_pca(dep_filt2_imp, x = 1, y = 2, n = 500, label=FALSE, indicate ="condition")
+dev.off()
+
+pdf(paste0(plotDir,'pca_filt2_allsamples_mixed_imputation.pdf'))
+plot_pca(dep_filt2_mixed, x = 1, y = 2, n = 500, label=FALSE, indicate ="condition")
+dev.off()
+```
+
+```{r}
+# Plot the Pearson correlation matrix
+pdf("plot_pearson_correlaton_filt2_allsamples_no_imputation.pdf")
+plot_cor(dep_filt2_no_imp, significant = TRUE, lower = 0, upper = 1, pal = "Reds")
+dev.off() ##This doesn't work, because there are NAs
+
+pdf(paste0(plotDir,"plot_pearson_correlaton_filt2_allsamples_imputed.pdf"))
+plot_cor(dep_filt2_imp, significant = TRUE, lower = 0, upper = 1, pal = "Reds")
+dev.off()
+
+pdf(paste0(plotDir,"plot_pearson_correlaton_filt2_allsamples_mixed.pdf"))
+plot_cor(dep_filt2_mixed, significant = TRUE, lower = 0, upper = 1, pal = "Reds")
+dev.off()
+```
+
+```{r}
+# Plot a heatmap of all significant proteins with the data centered per protein
+pdf(paste0(plotDir,"heatmap_all_sig_proteins_filt2_allsamples_no_imputation.pdf"))
+plot_heatmap(dep_filt2_no_imp, type = "centered", kmeans = TRUE, k=6,
+             col_limit = 2, show_row_names = TRUE, indicate = c("condition"))
+dev.off() ## Doesn't work because of NAs
+
+pdf(paste0(plotDir,"heatmap_all_sig_proteins_filt2_allsamples_imputed.pdf"))
+plot_heatmap(dep_filt2_imp, type = "centered", kmeans = TRUE, k=6,
+             col_limit = 2, show_row_names = TRUE, indicate = c("condition"))
+dev.off()
+
+pdf(paste0(plotDir,"heatmap_all_sig_proteins_filt2_allsamples_mixed.pdf"))
+plot_heatmap(dep_filt2_mixed, type = "centered", kmeans = TRUE, k=6,
+             col_limit = 2, show_row_names = TRUE, indicate = c("condition"))
+dev.off()
+```
+
+```{r}
+# Plot a heatmap of all significant proteins (rows) and the tested contrasts (columns)
+pdf(paste0(plotDir,"heatmap_all_sig_contrast_proteins_filt2_allsamples_no_imputation.pdf"))
+plot_heatmap(dep_filt2_no_imp, type = "contrast", kmeans = TRUE, 
+             k = 6, col_limit = 10, show_row_names = TRUE, )
+dev.off()
+
+pdf(paste0(plotDir,"heatmap_all_sig_contrast_proteins_filt2_allsamples_imputed.pdf"))
+plot_heatmap(dep_filt2_imp, type = "contrast", kmeans = TRUE, 
+             k = 6, col_limit = 10, show_row_names = TRUE, )
+dev.off()
+
+pdf(paste0(plotDir,"heatmap_all_sig_contrast_proteinsfilt2_filt2_allsamples_mixed.pdf"))
+plot_heatmap(dep_filt2_mixed, type = "contrast", kmeans = TRUE, 
+             k = 6, col_limit = 10, show_row_names = TRUE, )
+dev.off()
+```
+
+```{r}
+# Plot a volcano plot for the contrast "OE_vs_NOE""
+pdf(paste0(plotDir,"volcano_plot_filt2_allsamples_no_imputation.pdf"))
+plot_volcano(dep_filt2_no_imp, contrast = "OE_vs_NOE", label_size = 2, add_names = TRUE)
+dev.off()
+
+pdf(paste0(plotDir,"volcano_plot_filt2_allsamples_imputed.pdf"))
+plot_volcano(dep_filt2_imp, contrast = "OE_vs_NOE", label_size = 2, add_names = TRUE)
+dev.off()
+
+pdf(paste0(plotDir,"volcano_plot_filt2_allsamples_mixed.pdf"))
+plot_volcano(dep_filt2_mixed, contrast = "OE_vs_NOE", label_size = 2, add_names = TRUE)
+dev.off()
+
+##note, Warning message: ggrepel: 43 unlabeled data points (too many overlaps). Consider increasing max.overlaps 
+```
+
+```{r}
+# Plot a barplot for whatever proteins of interest you want to look at
+## If you have any that you want to specifically see if they're differentially expressed. 
+pdf("test.pdf")
+plot_single(dep, proteins = c("CCM", "AGPS"))
+dev.off()
+```
+
+```{r}
+#Look at a single protein of interest
+
+pdf("CCM_log2centred_intensity.pdf")
+plot_single(dep_filt2_no_imp, proteins = "CCM", type = "centered")
+dev.off()
+```
+
+```{r}
+# Plot a frequency plot of significant proteins for the different conditions
+pdf("freq_sig_proteins.pdf")
+plot_cond(dep, plot = TRUE)
+dev.off()
+##this doesn't work
+```
+
+```{r}
+# Generate a results table
+data_results_filt2_allsamples_no_imp <- get_results(dep_filt2_no_imp)
+
+data_results_filt2_allsamples_imp <- get_results(dep_filt2_imp)
+
+data_results_filt2_allsamples_mixed <- get_results(dep_filt2_mixed)
+```
+
+```{r}
+# Number of significant proteins
+data_results_filt2_allsamples_no_imp %>% filter(significant) %>% nrow()
+colnames(data_results_filt2_allsamples_no_imp)
+write.table(data_results_filt2_allsamples_no_imp, file=paste0(outputDir,"data_differential_results_filt2_allsamples_no_imp.txt"), quote=FALSE, sep="\t")
+
+data_results_filt2_allsamples_imp %>% filter(significant) %>% nrow()
+colnames(data_results_filt2_allsamples_imp)
+write.table(data_results_filt2_allsamples_imp, file=paste0(outputDir,"data_differential_results_filt2_allsamples_imp.txt"), quote=FALSE, sep="\t")
+
+data_results_filt2_allsamples_mixed %>% filter(significant) %>% nrow()
+colnames(data_results_filt2_allsamples_mixed)
+write.table(data_results_filt2_allsamples_mixed, file=paste0(outputDir,"data_differential_results_filt2_allsamples_mixed.txt"), quote=FALSE, sep="\t")
+```
+
+```{r}
+# Generate a wide data.frame
+df_wide_filt2_allsamples_no_imp <- get_df_wide(dep_filt2_no_imp)
+write.table(df_wide_filt2_allsamples_no_imp, file="data_wide_results_filt2_no_imp.txt", quote=FALSE, sep="\t")
+
+df_wide_filt2_allsamples_imp <- get_df_wide(dep_filt2_imp)
+write.table(df_wide_filt2_allsamples_imp, file="data_wide_results_filt2_imp.txt", quote=FALSE, sep="\t")
+
+df_wide_filt2_allsamples_mixed <- get_df_wide(dep_filt2_mixed)
+write.table(df_wide_filt2_allsamples_mixed, file="data_wide_results_filt2_mixed.txt", quote=FALSE, sep="\t")
+```
+
+```{r}
+# Generate a long data.frame
+df_long_filt2_allsamples_no_imp <- get_df_long(dep_filt2_no_imp)
+write.table(df_long_filt2_allsamples_no_imp, file="data_long_results_filt2_no_imp.txt", quote=FALSE, sep="\t")
+
+df_long_filt2_allsamples_imp <- get_df_long(dep_filt2_imp)
+write.table(df_long_filt2_allsamples_imp, file="data_long_results_filt2_imp.txt", quote=FALSE, sep="\t")
+
+df_long_filt2_allsamples_mixed <- get_df_long(dep_filt2_mixed)
+write.table(df_long_filt2_allsamples_mixed, file="data_long_results_filt2_mixed.txt", quote=FALSE, sep="\t")
+```
+
+```{r}
+# Save analyzed data
+save(data_se, data_filt, data_filt2, frac_filtered, complete_cases, no_filter, data_norm_no_filter, data_norm_complete_cases, data_norm_filt, data_norm_filt2, data_norm_frac_filtered, no_imputation_data_filt2, data_imp_filt2, mixed_imputation_filt2, data_diff_no_imputation_filt2, data_diff_imp_filt2, data_diff_mixed_imputation_filt2, data_diff_all_contrasts_no_imputation_filt2, data_diff_all_contrasts_data_imp_filt2, data_diff_all_contrasts_mixed_imputation_filt2, dep_filt2_no_imp, dep_filt2_imp, dep_filt2_mixed, file = "data.RData1")
+# These data can be loaded in future R sessions using this command
+load("data.RData1")
+```
+
+```{r}
+### LFQ-based DEP analysis ###
+# The wrapper function performs the full analysis
+data$Gene.names <- unlist(lapply(strsplit(as.character(data$Protein.IDs_1), "[|]"), '[[', 3))
+
+data_results <- LFQ(data, experimental_design, fun = "MinProb", 
+      type = "control", control = "NOE", alpha = 0.05, lfc = 1)
+```
+
+```{r}
+# Make a markdown report and save the results
+report(data_results_filt2_allsamples_no_imp)
+report(data_results_filt2_allsamples_imp)
+report(data_results_filt2_allsamples_mixed)
+
+##didn't work check this
+```
+
+```{r}
+# See all objects saved within the results object
+names(data_results_filt2_allsamples_imp)
+```
+
+```{r}
+# Extract the results table
+results_table_filt2_allsamples_imp <- data_results_filt2_allsamples_imp$results
+```
+
+```{r}
+# Number of significant proteins
+results_table %>% filter(significant) %>% nrow()
+```
+
+```{r}
+# Extract the sign object
+full_data <- data_results$dep
+
+# Use the full data to generate a heatmap
+pdf("heatmap_LFQ_based_diff.pdf")
+plot_heatmap(full_data, type = "contrast", kmeans = TRUE, 
+             k = 6, col_limit = 2, show_row_names = FALSE)
+dev.off()
+```
+
+
+

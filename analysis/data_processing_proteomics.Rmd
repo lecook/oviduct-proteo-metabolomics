@@ -1,0 +1,53 @@
+---
+title: "Data processing for proteomic analysis"
+author: "lecook"
+date: "2022-02-23"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Experimental design and execution
+## Sample information
+## Mass Spec details
+
+
+# Building a proteome for analyses
+## Use transdecoder to extract amino acid sequences
+A previous dunnart assembly from the lab (Charles Feigin, see Cook et al, 2022, in prep for further details) was used to build a proteome database to compare MS data to. 
+We used transdecoder v5.5.0 downloaded from here: https://github.com/TransDecoder/TransDecoder/releases/tag/TransDecoder-v5.5.0 to convert the annotation file to a proteome database.
+
+
+```{bash eval=FALSE}
+cd bin/
+
+git clone https://github.com/TransDecoder/TransDecoder/releases/tag/TransDecoder-v5.5.0
+
+perl bin/TransDecoder/utils/gff3_file_to_proteins.pl --gff3 data/Scras_dunnart_assem1.0_pb-ont-illsr_flyeassem_red-rd-scfitr2_pil2xwgs2_60chr2.gff --fasta data/Scras_dunnart_assem1.0_pb-ont-illsr_flyeassem_red-rd-scfitr2_pil2xwgs2_60chr.fasta > data/dunnart_devilRef_NEW.fasta
+```
+
+## Convert transcript IDs to uniprot and refseq protein IDs
+
+```{bash eval=FALSE}
+module load python3
+python3 code/alter_protein_database.py data/gene_to_protein.txt data/dunnart_devilRef.fasta data/dunnart_devilRef_NEW.fasta
+```
+
+# Running MaxQuant to quantify proteins in samples
+Run through slurm job scheduling: see code/basic_wrapper.slurm
+MaxQuant software downloaded from here: http://www.coxdocs.org/doku.php?id=maxquant:common:download_and_installation and run through Linux via dotnet
+
+
+```{bash eval=FALSE}
+module load dotnet-sdk/2.2.203-linux-x64
+
+dotnet bin/MaxQuantCmd.exe data/SV_2022NOEANDOE/mqpar_NEW1.xml
+```
+
+
+
